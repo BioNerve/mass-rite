@@ -332,52 +332,26 @@ function getLectionaryKey(date) {
   return null;
 }
 
-// ─── READINGS VIA CLAUDE API ─────────────────────────────────────────────────
-// Claude knows the full Roman Rite lectionary and returns the correct readings
-// for any date — Sundays, weekdays, feasts, memorials, solemnities.
-// Returns readings in English + native language translation in one call.
+// ─── READINGS VIA GEMINI API (server-side proxy) ─────────────────────────────
+// Calls /api/chat which uses Google Gemini free tier server-side.
+// The API key never touches the browser.
 async function fetchUniversalisReadings(lang) {
   const today = new Date();
   const y = today.getFullYear();
   const m = String(today.getMonth() + 1).padStart(2, "0");
   const d = String(today.getDate()).padStart(2, "0");
-  const dateStr = `${y}-${m}-${d}`;
-  const langLabel = lang === "pt" ? "Brazilian Portuguese (Catholic, CNBB style)" : "Latin American Spanish (Catholic, Biblia de Jerusalén style)";
+  const date = `${y}-${m}-${d}`;
 
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4000,
-      system: `You are a Catholic liturgical expert with complete knowledge of the Roman Rite lectionary. Given a date, return the correct Mass readings for that day — including weekdays, Sundays, feasts, memorials, and solemnities per the Roman Catholic liturgical calendar.
-
-Return ONLY valid JSON — no markdown, no backticks, no preamble. Return a JSON array of objects in liturgical order:
-[
-  { "label": "First Reading", "reference": "Book Chapter:Verses", "text": "full English text of the reading", "nativeText": "${langLabel} translation" },
-  { "label": "Responsorial Psalm", "reference": "Psalm N:Verses", "text": "full English text", "nativeText": "${langLabel} translation" },
-  { "label": "Second Reading", "reference": "Book Chapter:Verses", "text": "full English text", "nativeText": "${langLabel} translation" },
-  { "label": "Gospel Acclamation", "reference": "", "text": "Alleluia verse text only", "nativeText": "${langLabel} translation" },
-  { "label": "Gospel", "reference": "Book Chapter:Verses", "text": "full English text", "nativeText": "${langLabel} translation" }
-]
-
-Rules:
-- Include Second Reading only if it exists for that day (Sundays and solemnities only)
-- Include Gospel Acclamation verse (the line sung before the Gospel, not the Alleluia itself)
-- Always include the FULL text of each reading, word for word, not a summary
-- Use NABRE-style English (what US Catholics hear at Mass)
-- The nativeText must be a proper ${langLabel} Catholic translation`,
-      messages: [{ role: "user", content: `Return the complete Roman Catholic Mass readings for ${dateStr} as JSON with ${lang === "pt" ? "Portuguese" : "Spanish"} translations.` }]
-    })
+    body: JSON.stringify({ date, lang })
   });
 
   const data = await res.json();
-  const tb = data.content?.find(b => b.type === "text");
-  if (!tb?.text) throw new Error("No response from Claude");
-  const clean = tb.text.replace(/```json|```/g, "").trim();
-  const parsed = JSON.parse(clean);
-  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("Empty readings");
-  return parsed;
+  if (!res.ok) throw new Error(data.error || "Failed to load readings");
+  if (!Array.isArray(data.readings) || data.readings.length === 0) throw new Error("Empty readings");
+  return data.readings;
 }
 
 
