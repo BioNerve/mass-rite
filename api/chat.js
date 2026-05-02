@@ -68,7 +68,7 @@ Include Second Reading only on Sundays and solemnities. Always include full text
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 4000 }
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
         })
       }
     );
