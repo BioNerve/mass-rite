@@ -8,41 +8,65 @@ function getUSCCBUrl(date, lang) {
     : `https://bible.usccb.org/bible/readings/${code}.cfm`;
 }
 
+// Strip HTML tags and normalize whitespace
+function stripHtml(html) {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
 // Parse USCCB HTML into readings array
 function parseUSCCB(html) {
   const readings = [];
 
-  html = html.replace(/<script[\s\S]*?<\/script>/gi, "")
-             .replace(/<style[\s\S]*?<\/style>/gi, "");
+  // Remove scripts, styles, nav
+  html = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+    .replace(/<header[\s\S]*?<\/header>/gi, "")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, "");
 
-  const sectionRegex = /<h3[^>]*>([\s\S]*?)<\/h3>([\s\S]*?)(?=<h3|<footer|<div class="view-|$)/gi;
-  let match;
+  // Split by h3 tags
+  const parts = html.split(/<h3[^>]*>/i);
 
-  while ((match = sectionRegex.exec(html)) !== null) {
-    const rawLabel = match[1].replace(/<[^>]+>/g, "").trim();
-    const rawBody = match[2];
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    const closingH3 = part.indexOf("</h3>");
+    if (closingH3 === -1) continue;
 
-    const refMatch = rawBody.match(/<a[^>]*bible[^>]*>([\s\S]*?)<\/a>/i);
-    const reference = refMatch ? refMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+    const rawLabel = stripHtml(part.substring(0, closingH3)).trim();
+    const rawBody = part.substring(closingH3 + 5);
 
+    // Get reference — first anchor link text
+    const refMatch = rawBody.match(/<a[^>]*>([\s\S]*?)<\/a>/i);
+    const reference = refMatch ? stripHtml(refMatch[1]).trim() : "";
+
+    // Get body text — strip all HTML, clean up
     const text = rawBody
-      .replace(/<a[^>]*bible[^>]*>[\s\S]*?<\/a>/i, "")
+      .replace(/<a[^>]*>[\s\S]*?<\/a>/gi, "") // remove all links
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n")
       .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .replace(/R\.\s*/g, "\nR. ")
+      .replace(/R\.\s+/g, "\nR. ")
+      .replace(/\s*\n\s*/g, "\n")
+      .replace(/[ \t]+/g, " ")
       .trim();
 
-    if (!text || text.length < 20) continue;
+    if (!text || text.length < 30) continue;
 
+    // Map label to standard key
     let label = null;
     const l = rawLabel.toLowerCase();
-    if (l.includes("reading i") || l.includes("primera lectura") || l.includes("lectura i")) {
+
+    if (l.includes("reading i") && !l.includes("reading ii") ||
+        l.includes("primera lectura") ||
+        l.includes("lectura i") && !l.includes("lectura ii")) {
       label = "First Reading";
     } else if (l.includes("reading ii") || l.includes("segunda lectura") || l.includes("lectura ii")) {
       label = "Second Reading";
     } else if (l.includes("psalm") || l.includes("salmo")) {
       label = "Responsorial Psalm";
-    } else if (l.includes("alleluia") || l.includes("aleluya") || l.includes("gospel acclamation") || l.includes("aclamación")) {
+    } else if (l.includes("alleluia") || l.includes("aleluya") ||
+               l.includes("acclamation") || l.includes("aclamación")) {
       label = "Gospel Acclamation";
     } else if (l.includes("gospel") || l.includes("evangelio")) {
       label = "Gospel";
@@ -60,8 +84,8 @@ function parseUSCCB(html) {
 async function translateToPT(readings, apiKey) {
   if (!apiKey) return readings.map(r => ({ ...r, nativeText: r.text }));
 
-  const texts = readings.map(r => `[${r.label}]\n${r.text}`).join("\n\n---\n\n");
-  const prompt = `Translate these Catholic Mass readings to Brazilian Portuguese (CNBB Catholic style). Return ONLY a JSON array of strings, one per reading in the same order. No markdown, no backticks.\n\n${texts}`;
+  const texts = readings.map((r, i) => `[${i}] ${r.label}\n${r.text}`).join("\n\n---\n\n");
+  const prompt = `Translate these Catholic Mass readings to Brazilian Portuguese (CNBB Catholic style). Return ONLY a JSON array of strings, one translated text per reading in the same order. No markdown, no backticks, no explanation.\n\n${texts}`;
 
   try {
     const res = await fetch(
@@ -81,7 +105,8 @@ async function translateToPT(readings, apiKey) {
     const clean = text.replace(/```json|```/g, "").trim();
     const translations = JSON.parse(clean);
     return readings.map((r, i) => ({ ...r, nativeText: translations[i] || r.text }));
-  } catch {
+  } catch (e) {
+    console.error("Translation error:", e.message);
     return readings.map(r => ({ ...r, nativeText: r.text }));
   }
 }
@@ -95,7 +120,13 @@ module.exports = async function handler(req, res) {
   try {
     const url = getUSCCBUrl(date, lang);
     const pageRes = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; HolyMassApp/1.0)" }
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Cache-Control": "no-cache",
+        "Referer": "https://bible.usccb.org/"
+      }
     });
 
     if (!pageRes.ok) return res.status(500).json({ error: `USCCB fetch failed: ${pageRes.status}` });
@@ -104,7 +135,7 @@ module.exports = async function handler(req, res) {
     let readings = parseUSCCB(html);
 
     if (!readings || readings.length === 0) {
-      return res.status(500).json({ error: "Could not parse readings from USCCB" });
+      return res.status(500).json({ error: "Could not parse readings from USCCB", url });
     }
 
     if (lang === "es") {
