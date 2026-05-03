@@ -1,94 +1,24 @@
-// Build USCCB URL from date string YYYY-MM-DD
-function getUSCCBUrl(date, lang) {
-  const [y, m, d] = date.split("-");
-  const yy = y.slice(2);
-  const code = `${m}${d}${yy}`;
-  return lang === "es"
-    ? `https://bible.usccb.org/es/bible/lecturas/${code}.cfm`
-    : `https://bible.usccb.org/bible/readings/${code}.cfm`;
-}
+// api/chat.js — translation only
+// Receives pre-extracted English readings, returns Portuguese translations.
+// USCCB fetching happens client-side in the browser to avoid IP blocks.
 
-// Strip HTML tags and normalize whitespace
-function stripHtml(html) {
-  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-}
+module.exports = async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-// Parse USCCB HTML into readings array
-function parseUSCCB(html) {
-  const readings = [];
+  const { readings, lang } = req.body || {};
+  if (!readings || !lang) return res.status(400).json({ error: "Missing readings or lang" });
 
-  // Remove scripts, styles, nav
-  html = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-    .replace(/<header[\s\S]*?<\/header>/gi, "")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, "");
+  // Spanish readings come pre-translated from USCCB ES page — nothing to do
+  if (lang === "es") return res.status(200).json({ translations: readings.map(r => r.text) });
 
-  // Split by h3 tags
-  const parts = html.split(/<h3[^>]*>/i);
-
-  for (let i = 1; i < parts.length; i++) {
-    const part = parts[i];
-    const closingH3 = part.indexOf("</h3>");
-    if (closingH3 === -1) continue;
-
-    const rawLabel = stripHtml(part.substring(0, closingH3)).trim();
-    const rawBody = part.substring(closingH3 + 5);
-
-    // Get reference — first anchor link text
-    const refMatch = rawBody.match(/<a[^>]*>([\s\S]*?)<\/a>/i);
-    const reference = refMatch ? stripHtml(refMatch[1]).trim() : "";
-
-    // Get body text — strip all HTML, clean up
-    const text = rawBody
-      .replace(/<a[^>]*>[\s\S]*?<\/a>/gi, "") // remove all links
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/p>/gi, "\n")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/R\.\s+/g, "\nR. ")
-      .replace(/\s*\n\s*/g, "\n")
-      .replace(/[ \t]+/g, " ")
-      .trim();
-
-    if (!text || text.length < 30) continue;
-
-    // Map label to standard key
-    let label = null;
-    const l = rawLabel.toLowerCase();
-
-    if (l.includes("reading i") && !l.includes("reading ii") ||
-        l.includes("primera lectura") ||
-        l.includes("lectura i") && !l.includes("lectura ii")) {
-      label = "First Reading";
-    } else if (l.includes("reading ii") || l.includes("segunda lectura") || l.includes("lectura ii")) {
-      label = "Second Reading";
-    } else if (l.includes("psalm") || l.includes("salmo")) {
-      label = "Responsorial Psalm";
-    } else if (l.includes("alleluia") || l.includes("aleluya") ||
-               l.includes("acclamation") || l.includes("aclamación")) {
-      label = "Gospel Acclamation";
-    } else if (l.includes("gospel") || l.includes("evangelio")) {
-      label = "Gospel";
-    }
-
-    if (label && !readings.find(r => r.label === label)) {
-      readings.push({ label, reference, text });
-    }
-  }
-
-  return readings;
-}
-
-// Translate readings to Portuguese using Gemini
-async function translateToPT(readings, apiKey) {
-  if (!apiKey) return readings.map(r => ({ ...r, nativeText: r.text }));
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "API key not configured" });
 
   const texts = readings.map((r, i) => `[${i}] ${r.label}\n${r.text}`).join("\n\n---\n\n");
   const prompt = `Translate these Catholic Mass readings to Brazilian Portuguese (CNBB Catholic style). Return ONLY a JSON array of strings, one translated text per reading in the same order. No markdown, no backticks, no explanation.\n\n${texts}`;
 
   try {
-    const res = await fetch(
+    const geminiRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
@@ -99,50 +29,14 @@ async function translateToPT(readings, apiKey) {
         })
       }
     );
-    const data = await res.json();
+
+    const data = await geminiRes.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) return readings.map(r => ({ ...r, nativeText: r.text }));
+    if (!text) return res.status(500).json({ error: "No response from Gemini" });
+
     const clean = text.replace(/```json|```/g, "").trim();
     const translations = JSON.parse(clean);
-    return readings.map((r, i) => ({ ...r, nativeText: translations[i] || r.text }));
-  } catch (e) {
-    console.error("Translation error:", e.message);
-    return readings.map(r => ({ ...r, nativeText: r.text }));
-  }
-}
-
-module.exports = async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  const { date, lang } = req.body || {};
-  if (!date || !lang) return res.status(400).json({ error: "Missing date or lang" });
-
-  try {
-    const url = getUSCCBUrl(date, lang);
-    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-    const pageRes = await fetch(proxyUrl);
-
-    if (!pageRes.ok) return res.status(500).json({ error: `Proxy fetch failed: ${pageRes.status}` });
-
-    const proxyData = await pageRes.json();
-    const html = proxyData.contents;
-    if (!html) return res.status(500).json({ error: "Empty response from proxy" });
-    let readings = parseUSCCB(html);
-
-    if (!readings || readings.length === 0) {
-      return res.status(500).json({ error: "Could not parse readings from USCCB", url });
-    }
-
-    if (lang === "es") {
-      readings = readings.map(r => ({ ...r, nativeText: r.text }));
-    }
-
-    if (lang === "pt") {
-      const apiKey = process.env.GEMINI_API_KEY;
-      readings = await translateToPT(readings, apiKey);
-    }
-
-    return res.status(200).json({ readings });
+    return res.status(200).json({ translations });
 
   } catch (error) {
     return res.status(500).json({ error: error.message });
