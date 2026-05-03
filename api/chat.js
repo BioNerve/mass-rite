@@ -119,19 +119,14 @@ module.exports = async function handler(req, res) {
 
   try {
     const url = getUSCCBUrl(date, lang);
-    const pageRes = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Cache-Control": "no-cache",
-        "Referer": "https://bible.usccb.org/"
-      }
-    });
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    const pageRes = await fetch(proxyUrl);
 
-    if (!pageRes.ok) return res.status(500).json({ error: `USCCB fetch failed: ${pageRes.status}` });
+    if (!pageRes.ok) return res.status(500).json({ error: `Proxy fetch failed: ${pageRes.status}` });
 
-    const html = await pageRes.text();
+    const proxyData = await pageRes.json();
+    const html = proxyData.contents;
+    if (!html) return res.status(500).json({ error: "Empty response from proxy" });
     let readings = parseUSCCB(html);
 
     if (!readings || readings.length === 0) {
